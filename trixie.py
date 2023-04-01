@@ -1,29 +1,24 @@
 #!/usr/bin/env python3
 import os
-import subprocess
 from pathlib import Path
-from collections import namedtuple
 from time import perf_counter_ns, sleep
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
+import io
+from storage_client import StorageClientInterface, FtpClient
 
 ## Config params
-WORKERS = os.environ.get("WORKERS", 1)
+WORKERS = os.environ.get("WORKERS", 4)
 RETRY_LIMIT = os.environ.get("RETRY_LIMIT", 3)
 ERROR_LIMIT = os.environ.get("ERROR_LIMIT", 13)
 
-CopyParams = namedtuple("CopyParams", ["source", "destination"])
 
 
 def upload_chunk(source: Path, destination: str):
     started = perf_counter_ns()
 
-    command = f"curl --silent --show-error --max-time 2 --upload-file '{source.absolute()}' {destination}"
-    print(command)
-    result = subprocess.run(command, shell=True, capture_output=True)
-    if result.returncode:
-        error_output = result.stderr.decode("utf-8").strip()
-        raise RuntimeWarning(error_output)
+    client = FtpClient(destination)
+    with io.open(source, "rb") as reader:
+        client.upload_from_stream(source.name, reader)
 
     ended = perf_counter_ns()
     return ended - started
@@ -34,7 +29,7 @@ def import_asset(source_mpd: str, destination: str):
     assert mpd.is_file(), f"The provided '{source_mpd}' is not a file."
 
     todo = [fp for fp in mpd.parent.iterdir() if fp.is_file()]
-    queue = (CopyParams(fp, destination) for fp in todo[:21])
+    queue = (fp for fp in todo[:21])
 
     copied_count = 0
     tries_count = 0
@@ -44,19 +39,19 @@ def import_asset(source_mpd: str, destination: str):
     while queue and tries_count <= RETRY_LIMIT and error_count < ERROR_LIMIT:
         retry = list()
         with ThreadPoolExecutor(max_workers=WORKERS) as executor:
-            task_proxy = {executor.submit(upload_chunk, *p): p for p in queue}
+            task_proxy = {executor.submit(upload_chunk, fp, destination): fp for fp in queue}
             for task in as_completed(task_proxy):
-                param = task_proxy[task]
+                file_path = task_proxy[task]
                 try:
                     duration = task.result(timeout=1)
                     linear_duration += duration
                 except Exception as exc:
                     error_count += 1
-                    print(f"WARNING: cannot copy {param.source.name}, reason: {exc}.")
-                    retry.append(param)
+                    print(f"WARNING: cannot copy {file_path.name}, reason: {exc}.")
+                    retry.append(file_path)
                 else:
                     copied_count += 1
-                    print(f"{param.source.name} copied in {duration // 1_000:,} us.")
+                    print(f"{file_path.name} copied in {duration // 1_000:,} us.")
 
                 if error_count >= ERROR_LIMIT:
                     print(
@@ -78,7 +73,6 @@ def main(source_mpd: str, destination: str):
     assert source_mpd.endswith(".mpd"), f"The provided '{source_mpd}' is not a valid .mpd file"
     started = perf_counter_ns()
 
-    destination = destination.rstrip("/")
     copied, todo, tries, linear_duration_ns = import_asset(source_mpd, destination)
 
     ended = perf_counter_ns()
