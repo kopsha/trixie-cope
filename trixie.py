@@ -4,7 +4,7 @@ from pathlib import Path
 from time import perf_counter_ns, sleep
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import io
-from storage_client import StorageClientInterface, FtpClient
+from cloud_uploader import AwsUploader
 
 ## Config params
 WORKERS = os.environ.get("WORKERS", 4)
@@ -12,11 +12,10 @@ RETRY_LIMIT = os.environ.get("RETRY_LIMIT", 3)
 ERROR_LIMIT = os.environ.get("ERROR_LIMIT", 13)
 
 
-
 def upload_chunk(source: Path, destination: str):
     started = perf_counter_ns()
 
-    client = FtpClient(destination)
+    client = AwsUploader(destination)
     with io.open(source, "rb") as reader:
         client.upload_from_stream(source.name, reader)
 
@@ -29,7 +28,7 @@ def import_asset(source_mpd: str, destination: str):
     assert mpd.is_file(), f"The provided '{source_mpd}' is not a file."
 
     todo = [fp for fp in mpd.parent.iterdir() if fp.is_file()]
-    queue = (fp for fp in todo[:21])
+    queue = (fp for fp in todo[:2])
 
     copied_count = 0
     tries_count = 0
@@ -39,7 +38,9 @@ def import_asset(source_mpd: str, destination: str):
     while queue and tries_count <= RETRY_LIMIT and error_count < ERROR_LIMIT:
         retry = list()
         with ThreadPoolExecutor(max_workers=WORKERS) as executor:
-            task_proxy = {executor.submit(upload_chunk, fp, destination): fp for fp in queue}
+            task_proxy = {
+                executor.submit(upload_chunk, fp, destination): fp for fp in queue
+            }
             for task in as_completed(task_proxy):
                 file_path = task_proxy[task]
                 try:
@@ -51,7 +52,7 @@ def import_asset(source_mpd: str, destination: str):
                     retry.append(file_path)
                 else:
                     copied_count += 1
-                    print(f"{file_path.name} copied in {duration // 1_000:,} us.")
+                    print(f"{file_path.name} copied in {duration // 1_000_000:,} ms.")
 
                 if error_count >= ERROR_LIMIT:
                     print(
@@ -70,7 +71,9 @@ def import_asset(source_mpd: str, destination: str):
 
 
 def main(source_mpd: str, destination: str):
-    assert source_mpd.endswith(".mpd"), f"The provided '{source_mpd}' is not a valid .mpd file"
+    assert source_mpd.endswith(
+        ".mpd"
+    ), f"The provided '{source_mpd}' is not a valid .mpd file"
     started = perf_counter_ns()
 
     copied, todo, tries, linear_duration_ns = import_asset(source_mpd, destination)

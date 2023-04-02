@@ -1,1 +1,3 @@
 google-cloud-storage
+s3-client
+ujson
