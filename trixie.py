@@ -57,7 +57,7 @@ def import_asset(source_mpd: str, destination: str):
                     retry.append(file_path)
                 else:
                     copied_count += 1
-                    print(f"{file_path.name} copied in {duration // 1_000_000:,} ms.")
+                    print(f"{file_path.name} copied in {duration // 1_000_000:,} ms.", flush=True)
 
                 if error_count >= ERROR_LIMIT:
                     print(
@@ -68,7 +68,6 @@ def import_asset(source_mpd: str, destination: str):
                     break
 
                 sleep(0.0)
-
         queue = retry
         tries_count += 1
 
