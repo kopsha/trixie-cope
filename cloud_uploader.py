@@ -2,19 +2,18 @@
 import re
 from io import BufferedReader
 from abc import ABC, abstractmethod
-from functools import partial
-import ujson
 
 from google.cloud.storage import Client as GoogleCloudClient
 from ftplib import FTP as ftp_client
 
-from boto3 import client as boto3_client
-from botocore.config import Config as boto3_config
+from boto3.session import Session as boto3_session
 from boto3.s3.transfer import TransferConfig as boto3_transfer_config
+from botocore.config import Config as boto3_config
 
 
 DEFAULT_TIMEOUT = 8  # in seconds
-IO_CHUNKSIZE = 32_000  # should fit into one TCP packet
+KB = 1024
+IO_CHUNKSIZE = 32 * KB  # should fit into one TCP packet
 
 
 class UploaderInterface(ABC):
@@ -27,9 +26,14 @@ class UploaderInterface(ABC):
         pass
 
 
-class GoogleCloudUploader(UploaderInterface):
+class GoogleStorageUploader(UploaderInterface):
+    URI_PARSER = re.compile(r"^gs://(?P<bucket>[^/]+)/(?P<folder>[^/]+)/$")
+
     def __init__(self, destination: str) -> None:
-        """Maybe we'll need some credentials too"""
+        is_uri = self.URI_PARSER.match(destination)
+        if not is_uri:
+            raise ValueError(f"Provided {destination} is not a valid GS URI")
+
         self.client = GoogleCloudClient()
         self.bucket = self.client.bucket(destination)
 
@@ -38,16 +42,18 @@ class GoogleCloudUploader(UploaderInterface):
         blob.upload_from_file(stream, timeout=DEFAULT_TIMEOUT)
 
 
-class AwsUploader(UploaderInterface):
+class AmazonUploader(UploaderInterface):
     URI_PARSER = re.compile(r"^s3://(?P<bucket>[^/]+)/(?P<folder>[^/]+)/$")
+    SESSION = boto3_session()
 
     def __init__(self, destination: str) -> None:
-        match = self.URI_PARSER.match(destination)
-        if not match:
-            raise ValueError("Please provide a valid S3 bucket URI")
+        is_uri = self.URI_PARSER.match(destination)
+        if not is_uri:
+            raise ValueError(f"Provided {destination} is not a valid S3 URI")
 
-        self.bucket_name = match.group("bucket")
-        self.folder_name = match.group("folder")
+        self.bucket_name = is_uri.group("bucket")
+        self.folder = is_uri.group("folder")
+
         config = boto3_config(
             connect_timeout=DEFAULT_TIMEOUT,
             read_timeout=DEFAULT_TIMEOUT,
@@ -55,33 +61,33 @@ class AwsUploader(UploaderInterface):
             s3=dict(use_accelerate_endpoint=False),
             retries=dict(max_attempts=1),
         )
-        self.client = boto3_client("s3", config=config)
-        self.transfer_config = boto3_transfer_config(use_threads=False, io_chunksize=IO_CHUNKSIZE)
+        self.client = self.SESSION.client("s3", config=config)
 
     def upload_from_stream(self, name: str, stream: BufferedReader):
-        self.client.upload_fileobj(stream, self.bucket_name, f"{self.folder_name}/{name}", Config=self.transfer_config)
+        config = boto3_transfer_config(use_threads=False, io_chunksize=IO_CHUNKSIZE)
+        self.client.upload_fileobj(stream, self.bucket_name, f"{self.folder}/{name}", Config=config)
 
-class FtpClient(UploaderInterface):
+
+class FtpUploader(UploaderInterface):
     """The ftplib client is a mess, do not use it ever again"""
 
-    SPLIT_CREDENTIALS = re.compile(
+    URI_PARSER = re.compile(
         r"^(?P<protocol>\w+)://(?:(?P<user>[^:]+):(?P<password>[^:]+)@)?"
         r"(?P<host>[\w\.\-]+)(?::(?P<port>\d+))?/?$"
     )
 
     def __init__(self, destination) -> None:
-        match = self.SPLIT_CREDENTIALS.match(destination)
-        if not match:
+        is_uri = self.URI_PARSER.match(destination)
+        if not is_uri:
             raise ValueError("Please provide a valid upload URI")
 
-        self.user = match.group("user") or ""
-        self.password = match.group("password") or ""
-        self.host = match.group("host")
-        self.port = int(match.group("port"))
+        self.user = is_uri.group("user") or ""
+        self.password = is_uri.group("password") or ""
+        self.host = is_uri.group("host")
+        self.port = int(is_uri.group("port"))
         uri_parts = (self.user, self.password, self.host, self.port)
-        protocol = match.group("protocol")
-        if None in uri_parts or protocol != "ftp":
-            raise ValueError(f"Please provide a valid FTP URI ({protocol, *uri_parts})")
+        if None in uri_parts:
+            raise ValueError(f"Please provide a valid FTP URI (*uri_parts)")
 
         self.client = ftp_client(
             user=self.user, passwd=self.password, timeout=DEFAULT_TIMEOUT
@@ -92,3 +98,23 @@ class FtpClient(UploaderInterface):
             client.connect(host=self.host, port=self.port, timeout=DEFAULT_TIMEOUT)
             client.login(user=self.user, passwd=self.password)
             client.storbinary(f"STOR {name}", stream)
+
+
+class UploaderFactory:
+    BUILDERS = dict(
+        # manually managed factory registry
+        s3=AmazonUploader,
+        gs=GoogleStorageUploader,
+        ftp=FtpUploader,
+    )
+    URI_PARSER = re.compile(r"^(?P<protocol>\w+)://")
+
+    @classmethod
+    def make(cls, uri: str, **kwargs):
+        is_uri = cls.URI_PARSER.match(uri)
+        if not is_uri:
+            raise ValueError(f"Provided {uri} is not a valid URI")
+
+        key = is_uri.group("protocol")
+        builder = cls.BUILDERS[key]
+        return builder(destination=uri, **kwargs)

@@ -4,18 +4,21 @@ from pathlib import Path
 from time import perf_counter_ns, sleep
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import io
-from cloud_uploader import AwsUploader
+from cloud_uploader import UploaderFactory
+
 
 ## Config params
-WORKERS = os.environ.get("WORKERS", 4)
+WORKERS = os.environ.get("WORKERS", 8)
 RETRY_LIMIT = os.environ.get("RETRY_LIMIT", 3)
 ERROR_LIMIT = os.environ.get("ERROR_LIMIT", 13)
+UPLOADER_POOL = list()
 
 
-def upload_chunk(source: Path, destination: str):
+def upload_file(source: Path, picker: int):
+
     started = perf_counter_ns()
 
-    client = AwsUploader(destination)
+    client = UPLOADER_POOL[picker]
     with io.open(source, "rb") as reader:
         client.upload_from_stream(source.name, reader)
 
@@ -27,8 +30,11 @@ def import_asset(source_mpd: str, destination: str):
     mpd = Path(source_mpd)
     assert mpd.is_file(), f"The provided '{source_mpd}' is not a file."
 
+    global UPLOADER_POOL  # TODO: find a better way
+    UPLOADER_POOL.extend(UploaderFactory.make(destination) for _ in range(WORKERS))
+
     todo = [fp for fp in mpd.parent.iterdir() if fp.is_file()]
-    queue = (fp for fp in todo[:2])
+    queue = (fp for fp in todo)
 
     copied_count = 0
     tries_count = 0
@@ -39,7 +45,8 @@ def import_asset(source_mpd: str, destination: str):
         retry = list()
         with ThreadPoolExecutor(max_workers=WORKERS) as executor:
             task_proxy = {
-                executor.submit(upload_chunk, fp, destination): fp for fp in queue
+                executor.submit(upload_file, fp, i % WORKERS): fp
+                for i, fp in enumerate(queue)
             }
             for task in as_completed(task_proxy):
                 file_path = task_proxy[task]
@@ -59,7 +66,7 @@ def import_asset(source_mpd: str, destination: str):
                         f"ERROR: Aborted copying '{mpd.parent.name}', "
                         f"too many errors occured ({error_count})."
                     )
-                    executor.shutdown(wait=True, cancel_futures=True)
+                    executor.shutdown(cancel_futures=True)
                     break
 
                 sleep(0.0)
@@ -81,10 +88,10 @@ def main(source_mpd: str, destination: str):
     ended = perf_counter_ns()
     duration_ns = ended - started
 
-    linear_duration = linear_duration_ns // 1_000_000
-    duration = duration_ns // 1_000_000
+    linear_duration = linear_duration_ns / 1_000_000_000
+    duration = duration_ns / 1_000_000_000
     print(f"Copied {copied * 100 / todo:.1f} % of the chunks, in {tries} tries,")
-    print(f"and it took {duration:,} ms instead of {linear_duration:,} ms.")
+    print(f"and it took {duration:.3f} s instead of {linear_duration:.3f} s.")
 
 
 if __name__ == "__main__":
