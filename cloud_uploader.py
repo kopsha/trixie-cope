@@ -65,7 +65,9 @@ class AmazonUploader(UploaderInterface):
 
     def upload_from_stream(self, name: str, stream: BufferedReader):
         config = boto3_transfer_config(use_threads=False, io_chunksize=IO_CHUNKSIZE)
-        self.client.upload_fileobj(stream, self.bucket_name, f"{self.folder}/{name}", Config=config)
+        self.client.upload_fileobj(
+            stream, self.bucket_name, f"{self.folder}/{name}", Config=config
+        )
 
 
 class FtpUploader(UploaderInterface):

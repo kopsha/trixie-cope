@@ -8,14 +8,13 @@ from cloud_uploader import UploaderFactory
 
 
 ## Config params
-WORKERS = os.environ.get("WORKERS", 8)
-RETRY_LIMIT = os.environ.get("RETRY_LIMIT", 3)
-ERROR_LIMIT = os.environ.get("ERROR_LIMIT", 13)
+WORKERS = int(os.environ.get("WORKERS", 4))
+RETRY_LIMIT = int(os.environ.get("RETRY_LIMIT", 3))
+ERROR_LIMIT = int(os.environ.get("ERROR_LIMIT", 13))
 UPLOADER_POOL = list()
 
 
 def upload_file(source: Path, picker: int):
-
     started = perf_counter_ns()
 
     client = UPLOADER_POOL[picker]
@@ -33,8 +32,7 @@ def import_asset(source_mpd: str, destination: str):
     global UPLOADER_POOL  # TODO: find a better way
     UPLOADER_POOL.extend(UploaderFactory.make(destination) for _ in range(WORKERS))
 
-    todo = [fp for fp in mpd.parent.iterdir() if fp.is_file()]
-    queue = (fp for fp in todo)
+    queue = (fp for fp in mpd.parent.iterdir() if fp.is_file())
 
     copied_count = 0
     tries_count = 0
@@ -74,7 +72,7 @@ def import_asset(source_mpd: str, destination: str):
         queue = retry
         tries_count += 1
 
-    return copied_count, len(todo), tries_count, linear_duration
+    return copied_count, tries_count, error_count, linear_duration
 
 
 def main(source_mpd: str, destination: str):
@@ -83,14 +81,17 @@ def main(source_mpd: str, destination: str):
     ), f"The provided '{source_mpd}' is not a valid .mpd file"
     started = perf_counter_ns()
 
-    copied, todo, tries, linear_duration_ns = import_asset(source_mpd, destination)
+    copied, tries, errors, linear_duration_ns = import_asset(source_mpd, destination)
 
     ended = perf_counter_ns()
     duration_ns = ended - started
 
     linear_duration = linear_duration_ns / 1_000_000_000
     duration = duration_ns / 1_000_000_000
-    print(f"Copied {copied * 100 / todo:.1f} % of the chunks, in {tries} tries,")
+    print(
+        f"Uploaded {copied:,} chunks, in {tries} tries, "
+        f"with {errors} errors ({errors * 100 / copied:.1f} %)."
+    )
     print(f"and it took {duration:.3f} s instead of {linear_duration:.3f} s.")
 
 
