@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Static Assets Importer"""
+
 import os
 from pathlib import Path
 from time import perf_counter_ns, sleep
@@ -57,7 +59,10 @@ def import_asset(source_mpd: str, destination: str):
                     retry.append(file_path)
                 else:
                     copied_count += 1
-                    print(f"{file_path.name} copied in {duration // 1_000_000:,} ms.", flush=True)
+                    print(
+                        f"{file_path.name} copied in {duration // 1_000_000:,} ms.",
+                        flush=True,
+                    )
 
                 if error_count >= ERROR_LIMIT:
                     print(
@@ -89,7 +94,7 @@ def main(source_mpd: str, destination: str):
     duration = duration_ns / 1_000_000_000
     print(
         f"Uploaded {copied:,} chunks, in {tries} tries, "
-        f"with {errors} errors ({errors * 100 / copied:.1f} %)."
+        f"with {errors} errors ({errors * 100 / (copied or 1):.1f} %)."
     )
     print(f"and it took {duration:.3f} s instead of {linear_duration:.3f} s.")
 
