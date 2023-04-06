@@ -12,7 +12,9 @@ from botocore.config import Config as boto3_config
 
 
 DEFAULT_TIMEOUT = 8  # in seconds
-KB = 1024
+KB = 1000
+MB = KB ** 2
+
 IO_CHUNKSIZE = 32 * KB  # should fit into one TCP packet
 
 
