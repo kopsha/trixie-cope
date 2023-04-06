@@ -79,7 +79,7 @@ class FtpUploader(UploaderInterface):
         r"(?P<host>[\w\.\-]+)(?::(?P<port>\d+))?/?$"
     )
 
-    def __init__(self, destination) -> None:
+    def __init__(self, destination: str) -> None:
         is_uri = self.URI_PARSER.match(destination)
         if not is_uri:
             raise ValueError("Please provide a valid upload URI")
